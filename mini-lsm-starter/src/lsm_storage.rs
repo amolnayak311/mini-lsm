@@ -278,8 +278,19 @@ impl LsmStorageInner {
     }
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
-    pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>> {
-        unimplemented!()
+    pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
+        let state_locked = self.state.read();
+        let memtable = state_locked.memtable.clone();
+        for mem_table in std::iter::once(&memtable).chain(state_locked.imm_memtables.iter()) {
+            if let Some(value) = mem_table.get(key) {
+                return if value.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(value))
+                };
+            }
+        }
+        Ok(None)
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
@@ -288,13 +299,41 @@ impl LsmStorageInner {
     }
 
     /// Put a key-value pair into the storage by writing into the current memtable.
-    pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        unimplemented!()
+    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        // Even if its put we will use read(). The reason being memtable uses SkipMap whose
+        // put can takes immutable reference and is still thread safe.
+        // We will use write lock on the memtable only when we want to freeze any access to memtable
+        // itself
+        let size = {
+            let state_locked = self.state.read();
+            state_locked.memtable.put(key, value)?;
+            state_locked.memtable.approximate_size()
+        };
+        // The above code is put in block as we want the read lock to be released before
+        // we call try_freeze which potentially can take a write lock.
+        self.try_freeze(size)?;
+        Ok(())
+    }
+
+    fn try_freeze(&self, approximate_size: usize) -> Result<()> {
+        if approximate_size > self.options.target_sst_size {
+            // Double guard to check if we really need to freeze or some other thread already did it
+            let mutex = self.state_lock.lock();
+            let state_read_locked = self.state.read();
+            if state_read_locked.memtable.approximate_size() > self.options.target_sst_size {
+                // No other thread has made the current mutable thread immutable
+                // Don't hold the state locked more than needed
+                drop(state_read_locked);
+                self.force_freeze_memtable(&mutex)?;
+            }
+        }
+        Ok(())
     }
 
     /// Remove a key from the storage by writing an empty value.
-    pub fn delete(&self, _key: &[u8]) -> Result<()> {
-        unimplemented!()
+    pub fn delete(&self, key: &[u8]) -> Result<()> {
+        self.put(key, b"")?;
+        Ok(())
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
@@ -319,7 +358,28 @@ impl LsmStorageInner {
 
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
-        unimplemented!()
+        // Step 1: Create new id
+        let sst_id = self.next_sst_id();
+        // Step 2:  Create new memtable
+        let new_mem_table = Arc::new(MemTable::create(sst_id));
+
+        // Step 3: Get a write lock on the state
+        let mut state_writelock_guard = self.state.write();
+        let mut new_state = state_writelock_guard.as_ref().clone();
+
+        // TODO: Why not do
+        //  new_state.memtable = new_mem_table
+        //  and use the existing memtable instead of replace as two steps?
+        // Step 4: Replace with new memtable in the cloned state
+        let old_mem_table = std::mem::replace(&mut new_state.memtable, new_mem_table);
+
+        // Step 5: Put the old_mem_table at index 0 as its the latest immutable one
+        new_state.imm_memtables.insert(0, old_mem_table);
+
+        // Step 6: Replace the sstable's state with the new one
+        *state_writelock_guard = Arc::new(new_state);
+
+        Ok(())
     }
 
     /// Force flush the earliest-created immutable memtable to disk
