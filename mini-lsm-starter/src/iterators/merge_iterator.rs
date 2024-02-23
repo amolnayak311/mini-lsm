@@ -1,6 +1,7 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
+use bytes::Bytes;
 use std::cmp::{self};
 use std::collections::BinaryHeap;
 
@@ -47,7 +48,26 @@ pub struct MergeIterator<I: StorageIterator> {
 
 impl<I: StorageIterator> MergeIterator<I> {
     pub fn create(iters: Vec<Box<I>>) -> Self {
-        unimplemented!()
+        let valid_iterators = iters
+            .into_iter()
+            .filter(|x| x.is_valid())
+            .collect::<Vec<Box<I>>>();
+        if valid_iterators.is_empty() {
+            Self {
+                iters: BinaryHeap::new(),
+                current: None,
+            }
+        } else {
+            let mut iters = BinaryHeap::new();
+            let len = valid_iterators.len();
+            valid_iterators
+                .into_iter()
+                .zip(0..len)
+                .for_each(|(iter, idx)| iters.push(HeapWrapper(idx, iter)));
+
+            let current = iters.pop();
+            Self { iters, current }
+        }
     }
 }
 
@@ -57,18 +77,49 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     type KeyType<'a> = KeySlice<'a>;
 
     fn key(&self) -> KeySlice {
-        unimplemented!()
+        self.current.as_ref().unwrap().1.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.current.as_ref().unwrap().1.value()
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.current.is_some()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        let current = self.current.take().unwrap();
+        // Is there a better way to not clone and use the KeySlice?
+        let key_vec = current.1.key().to_key_vec();
+        let current_key = key_vec.as_key_slice();
+        self.iters.push(current);
+        // We first need to offer current back to heap as it was popped out in last ``next`` call
+        // Subsequent while loop will ensure its popped off
+        // Pop out all items whose keys are same as the one in current or empty
+        while let Some(mut top) = self.iters.pop() {
+            if top.1.is_valid() && top.1.key() > current_key {
+                // We now have a key that is greater that current
+                self.current = Some(top);
+                return Ok(());
+            } else {
+                // The key is either empty or same as the current
+                match top.1.next() {
+                    Ok(_) => {
+                        if top.1.is_valid() {
+                            // Offer this to heap again as the iterator is still yielding
+                            // valid values
+                            self.iters.push(HeapWrapper(top.0, top.1))
+                        }
+                    }
+                    Err(error) => {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        // Since we reached here, we haven't found the next key to return
+        self.current.take();
+        Ok(())
     }
 }
