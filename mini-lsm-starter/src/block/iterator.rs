@@ -1,9 +1,10 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
+use bytes::Buf;
 use std::sync::Arc;
 
-use crate::key::{KeySlice, KeyVec};
+use crate::key::{Key, KeySlice, KeyVec};
 
 use super::Block;
 
@@ -32,46 +33,140 @@ impl BlockIterator {
         }
     }
 
+    fn init(&mut self) {
+        self.first_key = self.key_at_raw_offset(0);
+        self.seek_to_offset(0);
+    }
+
+    fn seek_to_offset(&mut self, idx: usize) {
+        // seeks to the given offset
+        if idx == self.block.offsets.len() {
+            // we reached the end and cannot iterate any further
+            self.key = KeyVec::new();
+        } else {
+            self.idx = idx;
+            self.key = self.key_at_offset(idx);
+        }
+    }
+
+    fn key_at_offset(&self, offset: usize) -> KeyVec {
+        debug_assert!(
+            offset < self.block.offsets.len(),
+            "provided offset {} is out of bounds",
+            offset
+        );
+        self.key_at_raw_offset(self.block.offsets[offset] as usize)
+    }
+
+    fn value_at_offset(&self, offset: usize) -> &[u8] {
+        debug_assert!(
+            offset < self.block.offsets.len(),
+            "provided offset {} is out of bounds",
+            offset
+        );
+        let this_kv_start_raw_idx = self.block.offsets[offset] as usize;
+        let key_length =
+            (&self.block.data[this_kv_start_raw_idx..this_kv_start_raw_idx + 2]).get_u16() as usize;
+        // start offset of value is length of the key + 2 (length of the key)
+        self.value_at_raw_offset(this_kv_start_raw_idx + key_length + 2)
+    }
+
+    fn value_at_raw_offset(&self, raw_offset: usize) -> &[u8] {
+        debug_assert!(
+            raw_offset < self.block.data.len(),
+            "provided raw_offset {} is out of bounds",
+            raw_offset
+        );
+        let value_length = (&self.block.data[raw_offset..raw_offset + 2]).get_u16() as usize;
+        let value_start_idx = raw_offset + 2;
+        &self.block.data[value_start_idx..value_start_idx + value_length]
+    }
+
+    fn key_at_raw_offset(&self, raw_offset: usize) -> KeyVec {
+        // gets the key at offset. The offset is the raw offset in the data byte array
+        debug_assert!(
+            raw_offset < self.block.data.len(),
+            "provided raw_offset {} is out of bounds",
+            raw_offset
+        );
+
+        let key_length = (&self.block.data[raw_offset..raw_offset + 2]).get_u16() as usize;
+        let key_start_idx = raw_offset + 2;
+        Key::from_vec(self.block.data[key_start_idx..key_start_idx + key_length].to_vec())
+    }
+
     /// Creates a block iterator and seek to the first entry.
     pub fn create_and_seek_to_first(block: Arc<Block>) -> Self {
-        unimplemented!()
+        let mut iter = Self {
+            block,
+            key: KeyVec::new(),
+            value_range: (0, 0),
+            idx: 0,
+            first_key: KeyVec::new(),
+        };
+        iter.init();
+        iter
     }
 
     /// Creates a block iterator and seek to the first key that >= `key`.
     pub fn create_and_seek_to_key(block: Arc<Block>, key: KeySlice) -> Self {
-        unimplemented!()
+        let mut iter = Self {
+            block,
+            key: KeyVec::new(),
+            value_range: (0, 0),
+            idx: 0,
+            first_key: KeyVec::new(),
+        };
+        iter.seek_to_key(key);
+        iter
     }
 
     /// Returns the key of the current entry.
     pub fn key(&self) -> KeySlice {
-        unimplemented!()
+        assert!(self.is_valid(), "Invalid iterator");
+        self.key.as_key_slice()
     }
 
     /// Returns the value of the current entry.
     pub fn value(&self) -> &[u8] {
-        unimplemented!()
+        assert!(self.is_valid(), "Invalid iterator");
+        self.value_at_offset(self.idx)
     }
 
     /// Returns true if the iterator is valid.
     /// Note: You may want to make use of `key`
     pub fn is_valid(&self) -> bool {
-        unimplemented!()
+        !self.key.is_empty()
     }
 
     /// Seeks to the first key in the block.
     pub fn seek_to_first(&mut self) {
-        unimplemented!()
+        self.seek_to_offset(0)
     }
 
     /// Move to the next key in the block.
     pub fn next(&mut self) {
-        unimplemented!()
+        assert!(self.is_valid(), "Invalid iterator");
+        self.idx += 1;
+        self.seek_to_offset(self.idx)
     }
 
     /// Seek to the first key that >= `key`.
     /// Note: You should assume the key-value pairs in the block are sorted when being added by
     /// callers.
     pub fn seek_to_key(&mut self, key: KeySlice) {
-        unimplemented!()
+        let (mut low, mut high) = (0, self.block.offsets.len());
+        while low < high {
+            let mid = (low + high) / 2;
+            let key_vec_at_offset = self.key_at_offset(mid);
+            self.seek_to_offset(mid);
+            let key_ = self.key();
+            match key.cmp(&key_) {
+                std::cmp::Ordering::Less => high = mid,
+                std::cmp::Ordering::Equal => return,
+                std::cmp::Ordering::Greater => low = mid + 1,
+            }
+        }
+        self.seek_to_offset(low);
     }
 }

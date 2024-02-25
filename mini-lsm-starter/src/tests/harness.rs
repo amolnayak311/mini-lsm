@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 use std::{
     collections::BTreeMap, ops::Bound, os::unix::fs::MetadataExt, path::Path, sync::Arc,
     time::Duration,
@@ -109,14 +110,11 @@ where
             v,
             as_bytes(iter.value()),
         );
-        // println!("{:?}, {:?}", k, as_bytes(iter.key().for_testing_key_ref()));
-        // println!("{:?}, {:?}", v, as_bytes(iter.value()));
         iter.next().unwrap();
     }
     assert!(!iter.is_valid());
 }
 
-#[allow(dead_code)]
 pub fn check_iter_result_by_key_and_ts<I>(iter: &mut I, expected: Vec<((Bytes, u64), Bytes)>)
 where
     I: for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
