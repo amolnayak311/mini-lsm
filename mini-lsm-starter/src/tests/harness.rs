@@ -1,4 +1,5 @@
-#[allow(dead_code)]
+#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
+#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 use std::{
     collections::BTreeMap, ops::Bound, os::unix::fs::MetadataExt, path::Path, sync::Arc,
     time::Duration,
@@ -115,6 +116,7 @@ where
     assert!(!iter.is_valid());
 }
 
+#[allow(dead_code)]
 pub fn check_iter_result_by_key_and_ts<I>(iter: &mut I, expected: Vec<((Bytes, u64), Bytes)>)
 where
     I: for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,

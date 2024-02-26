@@ -33,6 +33,12 @@ impl BlockIterator {
         }
     }
 
+    pub fn empty() -> Self {
+        BlockIterator::new(Arc::new(Block {
+            data: vec![],
+            offsets: vec![],
+        }))
+    }
     fn init(&mut self) {
         self.first_key = self.key_at_raw_offset(0);
         self.seek_to_offset(0);

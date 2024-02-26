@@ -63,6 +63,9 @@ impl BlockBuilder {
             // push the value length
             self.data.put_u16(value.len() as u16);
             self.data.put(value);
+            if self.first_key.is_empty() {
+                self.first_key = key.to_key_vec();
+            }
             true
         }
     }
