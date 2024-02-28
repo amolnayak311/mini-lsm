@@ -2,22 +2,33 @@
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use anyhow::{bail, Result};
+use bytes::Bytes;
+use std::collections::Bound;
 
+use crate::iterators::two_merge_iterator::TwoMergeIterator;
+use crate::table::SsTableIterator;
 use crate::{
     iterators::{merge_iterator::MergeIterator, StorageIterator},
     mem_table::MemTableIterator,
 };
 
 /// Represents the internal type for an LSM iterator. This type will be changed across the tutorial for multiple times.
-type LsmIteratorInner = MergeIterator<MemTableIterator>;
+type LsmIteratorInner =
+    TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>;
 
 pub struct LsmIterator {
     inner: LsmIteratorInner,
+    end_bound: Bound<Bytes>,
+    is_valid: bool,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(iter: LsmIteratorInner) -> Result<Self> {
-        let mut iter = Self { inner: iter };
+    pub(crate) fn new(inner: LsmIteratorInner, end_bound: Bound<Bytes>) -> Result<Self> {
+        let mut iter = Self {
+            inner,
+            end_bound,
+            is_valid: true,
+        };
         iter.skip_deletes()?;
         Ok(iter)
     }
@@ -42,12 +53,27 @@ impl StorageIterator for LsmIterator {
     }
 
     fn is_valid(&self) -> bool {
-        self.inner.is_valid()
+        self.is_valid
     }
 
     fn next(&mut self) -> Result<()> {
-        self.inner.next()?;
-        self.skip_deletes()?;
+        if self.is_valid {
+            self.inner.next()?;
+            self.skip_deletes()?;
+            if self.inner.is_valid() {
+                match self.end_bound {
+                    Bound::Included(ref key) => {
+                        self.is_valid = self.inner.key().raw_ref() <= key.as_ref();
+                    }
+                    Bound::Excluded(ref key) => {
+                        self.is_valid = self.inner.key().raw_ref() < key.as_ref();
+                    }
+                    Bound::Unbounded => {}
+                }
+            } else {
+                self.is_valid = false;
+            }
+        }
         Ok(())
     }
 }
@@ -72,8 +98,12 @@ impl<I: StorageIterator> FusedIterator<I> {
 impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
     type KeyType<'a> = I::KeyType<'a> where Self: 'a;
 
-    fn is_valid(&self) -> bool {
-        !self.has_errored && self.iter.is_valid()
+    fn value(&self) -> &[u8] {
+        if self.has_errored {
+            panic!("Nothing more to iterate")
+        } else {
+            self.iter.value()
+        }
     }
 
     fn key(&self) -> Self::KeyType<'_> {
@@ -84,12 +114,8 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
         }
     }
 
-    fn value(&self) -> &[u8] {
-        if self.has_errored {
-            panic!("Nothing more to iterate")
-        } else {
-            self.iter.value()
-        }
+    fn is_valid(&self) -> bool {
+        !self.has_errored && self.iter.is_valid()
     }
 
     fn next(&mut self) -> Result<()> {
