@@ -1,12 +1,13 @@
 #![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
@@ -23,7 +24,7 @@ use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::{map_bound, MemTable};
 use crate::mvcc::LsmMvccInner;
-use crate::table::{SsTable, SsTableIterator};
+use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -158,7 +159,22 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
-        unimplemented!()
+        // Send a message to stop the flush thread
+        self.flush_notifier.send(())?;
+        // Wait for the flush thread to stop
+        let mut flush_thread = self.flush_thread.lock();
+        if let Some(join_handler) = flush_thread.take() {
+            join_handler.join().map_err(|err| anyhow!("{:?}", err))?;
+        }
+        // Now that the flush thread stopped, check in memory immutable MemTables are empty
+        while !self.inner.state.read().imm_memtables.is_empty() {
+            self.inner.force_flush_next_imm_memtable()?;
+        }
+
+        // Now that all ,mem tables are flushed, sync to disk
+        self.inner.sync_dir()?;
+
+        Ok(())
     }
 
     /// Start the storage engine by either loading an existing directory or creating a new one if the directory does
@@ -392,7 +408,8 @@ impl LsmStorageInner {
     }
 
     pub(super) fn sync_dir(&self) -> Result<()> {
-        unimplemented!()
+        File::open(&self.path)?.sync_all()?;
+        Ok(())
     }
 
     /// Force freeze the current memtable to an immutable memtable
@@ -423,7 +440,37 @@ impl LsmStorageInner {
 
     /// Force flush the earliest-created immutable memtable to disk
     pub fn force_flush_next_imm_memtable(&self) -> Result<()> {
-        unimplemented!()
+        let _state_lock = self.state_lock.lock();
+        // Get the Current memtable to flush
+        let mem_table_to_flush = {
+            let state = self.state.read();
+            state
+                .imm_memtables
+                .last()
+                .expect("Expected to see a memtable")
+                .clone()
+        };
+
+        // Build the sstable, this will be an expensive operation as it needs to do IO
+        let mut builder = SsTableBuilder::new(self.options.block_size);
+        mem_table_to_flush.flush(&mut builder)?;
+        let sst_id = mem_table_to_flush.id();
+        let table = builder.build(
+            sst_id,
+            Some(self.block_cache.clone()),
+            self.path.join(format!("{:05}.sst", sst_id)),
+        )?;
+
+        // Now that we have the table, get a write lock on the state, pop the immutable memtable
+        // and insert the created sstable at index 0
+
+        let mut guard = self.state.write();
+        let mut state = guard.as_ref().clone();
+        state.imm_memtables.pop().unwrap();
+        state.l0_sstables.insert(0, sst_id);
+        state.sstables.insert(sst_id, Arc::new(table));
+        *guard = Arc::new(state);
+        Ok(())
     }
 
     pub fn new_txn(&self) -> Result<()> {

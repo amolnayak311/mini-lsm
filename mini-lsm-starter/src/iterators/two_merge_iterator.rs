@@ -84,4 +84,7 @@ impl<
         self.pick_a = self.should_pick_a();
         Ok(())
     }
+    fn num_active_iterators(&self) -> usize {
+        self.a.num_active_iterators() + self.b.num_active_iterators()
+    }
 }

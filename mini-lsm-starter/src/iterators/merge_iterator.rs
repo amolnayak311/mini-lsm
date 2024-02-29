@@ -75,12 +75,12 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
 {
     type KeyType<'a> = KeySlice<'a>;
 
-    fn key(&self) -> KeySlice {
-        self.current.as_ref().unwrap().1.key()
-    }
-
     fn value(&self) -> &[u8] {
         self.current.as_ref().unwrap().1.value()
+    }
+
+    fn key(&self) -> KeySlice {
+        self.current.as_ref().unwrap().1.key()
     }
 
     fn is_valid(&self) -> bool {
@@ -120,5 +120,20 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
         // Since we reached here, we haven't found the next key to return
         self.current.take();
         Ok(())
+    }
+
+    fn num_active_iterators(&self) -> usize {
+        let num_active_iters_on_heap = self
+            .iters
+            .iter()
+            .map(|item| item.1.num_active_iterators())
+            .sum::<usize>();
+
+        num_active_iters_on_heap
+            + self
+                .current
+                .as_ref()
+                .map(|head| head.1.num_active_iterators())
+                .unwrap_or(0)
     }
 }
