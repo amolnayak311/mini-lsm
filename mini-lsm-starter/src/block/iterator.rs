@@ -40,7 +40,9 @@ impl BlockIterator {
         }))
     }
     fn init(&mut self) {
-        self.first_key = self.key_at_raw_offset(0);
+        let key_len = (&self.block.data[2..4]).get_u16() as usize;
+        let key = &self.block.data[4..key_len + 4];
+        self.first_key = KeyVec::from_vec(key.to_vec());
         self.seek_to_offset(0);
     }
 
@@ -71,10 +73,11 @@ impl BlockIterator {
             offset
         );
         let this_kv_start_raw_idx = self.block.offsets[offset] as usize;
-        let key_length =
-            (&self.block.data[this_kv_start_raw_idx..this_kv_start_raw_idx + 2]).get_u16() as usize;
-        // start offset of value is length of the key + 2 (length of the key)
-        self.value_at_raw_offset(this_kv_start_raw_idx + key_length + 2)
+
+        let key_length = (&self.block.data[this_kv_start_raw_idx + 2..this_kv_start_raw_idx + 4])
+            .get_u16() as usize;
+        // start offset of value is length of the key + 2 (length of the key prefix) + 2(length of key suffix)
+        self.value_at_raw_offset(this_kv_start_raw_idx + key_length + 4)
     }
 
     fn value_at_raw_offset(&self, raw_offset: usize) -> &[u8] {
@@ -96,9 +99,15 @@ impl BlockIterator {
             raw_offset
         );
 
-        let key_length = (&self.block.data[raw_offset..raw_offset + 2]).get_u16() as usize;
-        let key_start_idx = raw_offset + 2;
-        Key::from_vec(self.block.data[key_start_idx..key_start_idx + key_length].to_vec())
+        let key_prefix_len = (&self.block.data[raw_offset..raw_offset + 2]).get_u16() as usize;
+        let remaining_key_length =
+            (&self.block.data[raw_offset + 2..raw_offset + 4]).get_u16() as usize;
+        let key_start_idx = raw_offset + 4;
+        let key_suffix = &self.block.data[key_start_idx..key_start_idx + remaining_key_length];
+        let mut key_vec = Vec::with_capacity(key_prefix_len + key_suffix.len());
+        key_vec.extend(&self.first_key.raw_ref()[..key_prefix_len]);
+        key_vec.extend(key_suffix);
+        Key::from_vec(key_vec)
     }
 
     /// Creates a block iterator and seek to the first entry.
@@ -123,6 +132,7 @@ impl BlockIterator {
             idx: 0,
             first_key: KeyVec::new(),
         };
+        iter.init();
         iter.seek_to_key(key);
         iter
     }

@@ -79,6 +79,14 @@ impl Bloom {
         let mut filter = BytesMut::with_capacity(nbytes);
         filter.resize(nbytes, 0);
 
+        for key in keys {
+            let mut h = *key;
+            let delta = (h >> 17) | (h << 15); // h is the key hash
+            for _ in 0..k {
+                filter.set_bit((h as usize) % nbits, true);
+                h = h.wrapping_add(delta);
+            }
+        }
         // TODO: build the bloom filter
 
         Self {
@@ -88,17 +96,18 @@ impl Bloom {
     }
 
     /// Check if a bloom filter may contain some data
-    pub fn may_contain(&self, h: u32) -> bool {
+    pub fn may_contain(&self, mut h: u32) -> bool {
         if self.k > 30 {
             // potential new encoding for short bloom filters
             true
         } else {
             let nbits = self.filter.bit_len();
             let delta = (h >> 17) | (h << 15);
-
-            // TODO: probe the bloom filter
-
-            true
+            (0..self.k).all(|_| {
+                let is_set = self.filter.get_bit((h as usize) % nbits);
+                h = h.wrapping_add(delta);
+                is_set
+            })
         }
     }
 }

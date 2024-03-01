@@ -57,9 +57,18 @@ impl BlockBuilder {
             // Push the offset
             self.offsets.push(self.data.len() as u16);
             // Push the key len
-            self.data.put_u16(key.len() as u16);
-            // push the key itself
-            self.data.put(key.raw_ref());
+            // find the common prefix length
+            let overlap = self
+                .first_key
+                .raw_ref()
+                .iter()
+                .zip(key.raw_ref())
+                .take_while(|(c1, c2)| c1 == c2)
+                .fold(0, |acc, _| acc + 1) as u16;
+
+            self.data.put_u16(overlap);
+            self.data.put_u16(key.len() as u16 - overlap);
+            self.data.put(&key.raw_ref()[overlap as usize..]);
             // push the value length
             self.data.put_u16(value.len() as u16);
             self.data.put(value);

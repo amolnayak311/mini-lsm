@@ -13,6 +13,7 @@ use anyhow::{anyhow, Result};
 pub use builder::SsTableBuilder;
 use bytes::{Buf, BufMut, Bytes};
 pub use iterator::SsTableIterator;
+use nom::AsBytes;
 
 use crate::block::Block;
 use crate::key::{KeyBytes, KeySlice};
@@ -147,10 +148,19 @@ impl SsTable {
 
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
-        let block_meta_offset_vec = file.read(file.size() - 4, 4)?;
+        // Read bloom filter
+        let mut end_offset = file.size();
+        let bloom_offset_vec = file.read(end_offset - 4, 4)?;
+        let bloom_offset = (&bloom_offset_vec[..]).get_u32() as u64;
+        let bloom_meta_bytes = file.read(bloom_offset, end_offset - bloom_offset - 4)?;
+        let bloom = Some(Bloom::decode(bloom_meta_bytes.as_bytes())?);
+        end_offset = bloom_offset;
+
+        // read metadata
+        let block_meta_offset_vec = file.read(end_offset - 4, 4)?;
         let block_meta_offset = (&block_meta_offset_vec[..]).get_u32() as u64;
 
-        let block_meta_bytes = file.read(block_meta_offset, file.size() - block_meta_offset - 4)?;
+        let block_meta_bytes = file.read(block_meta_offset, end_offset - block_meta_offset - 4)?;
         let block_meta = BlockMeta::decode_block_meta(&block_meta_bytes[..]);
         let first_key = if !block_meta.is_empty() {
             block_meta.first().unwrap().first_key.clone()
@@ -174,7 +184,7 @@ impl SsTable {
             block_cache,
             first_key,
             last_key,
-            bloom: None,
+            bloom,
             max_ts: 0,
         })
     }
