@@ -16,6 +16,7 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
+use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
@@ -253,6 +254,13 @@ impl LsmStorageInner {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
 
+    pub fn cleanup(&self, sst_ids: Vec<usize>) -> Result<()> {
+        for sst_id in sst_ids {
+            std::fs::remove_file(&self.path.join(format!("{:05}.sst", sst_id)))?;
+        }
+        Ok(())
+    }
+
     /// Start the storage engine by either loading an existing directory or creating a new one if the directory does
     /// not exist.
     pub(crate) fn open(path: impl AsRef<Path>, options: LsmStorageOptions) -> Result<Self> {
@@ -314,8 +322,6 @@ impl LsmStorageInner {
             }
         }
 
-        // TODO: Search contender SStables here for the required key
-
         // Get the sstable where we potentially may have this key
         let table_option = snapshot
             .l0_sstables
@@ -323,28 +329,33 @@ impl LsmStorageInner {
             .map(|id| snapshot.sstables[id].clone())
             .find(|table| key >= table.first_key().raw_ref() && key <= table.last_key().raw_ref());
 
-        match table_option {
-            Some(table) => {
-                // This table can possibly have that key, lets try to seek it
-                let iter =
-                    SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(key))?;
-                if iter.is_valid() && iter.key().raw_ref() == key {
-                    let value = iter.value();
-                    if value.is_empty() {
-                        // Value is deleted
-                        Ok(None)
-                    } else {
-                        Ok(Some(Bytes::copy_from_slice(value)))
-                    }
-                } else {
+        if let Some(table) = table_option {
+            // This table can possibly have that key, lets try to seek it
+            let iter = SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(key))?;
+            if iter.is_valid() && iter.key().raw_ref() == key {
+                let value = iter.value();
+                return if value.is_empty() {
+                    // Value is deleted
                     Ok(None)
-                }
+                } else {
+                    Ok(Some(Bytes::copy_from_slice(value)))
+                };
             }
-            None =>
-            // key is out of range
-            {
-                Ok(None)
-            }
+        }
+        // We still haven't found the key, lets look for it in the level 1 sstables
+
+        let sst_concat_iter = SstConcatIterator::create_and_seek_to_key(
+            snapshot.levels[0]
+                .1
+                .iter()
+                .map(|id| snapshot.sstables[id].clone())
+                .collect(),
+            KeySlice::from_slice(key),
+        )?;
+        if sst_concat_iter.is_valid() && sst_concat_iter.key().raw_ref() == key {
+            Ok(Some(Bytes::copy_from_slice(sst_concat_iter.value())))
+        } else {
+            Ok(None)
         }
     }
 
@@ -543,9 +554,34 @@ impl LsmStorageInner {
                 }
             }
         }
-        let two_merge_iter = TwoMergeIterator::create(mi, MergeIterator::create(sst_iters))?;
+
+        let l1_sstables_to_scan = snapshot.levels[0]
+            .1
+            .iter()
+            .map(|id| snapshot.sstables[id].clone())
+            .collect::<Vec<Arc<SsTable>>>();
+        let sst_concat_iter = match lower {
+            Bound::Included(included) => SstConcatIterator::create_and_seek_to_key(
+                l1_sstables_to_scan,
+                KeySlice::from_slice(included),
+            )?,
+            Bound::Excluded(excluded) => {
+                let mut iter = SstConcatIterator::create_and_seek_to_key(
+                    l1_sstables_to_scan,
+                    KeySlice::from_slice(excluded),
+                )?;
+                if iter.is_valid() && iter.key().raw_ref() == excluded {
+                    iter.next()?;
+                }
+                iter
+            }
+            Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(l1_sstables_to_scan)?,
+        };
+
+        let mem_and_l0_iterator = TwoMergeIterator::create(mi, MergeIterator::create(sst_iters))?;
+        let iter = TwoMergeIterator::create(mem_and_l0_iterator, sst_concat_iter)?;
         Ok(FusedIterator::new(LsmIterator::new(
-            two_merge_iter,
+            iter,
             map_bound(upper),
         )?))
     }
