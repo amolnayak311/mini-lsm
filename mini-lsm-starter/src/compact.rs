@@ -259,11 +259,7 @@ impl LsmStorageInner {
                 let mut id_set: HashSet<usize> = l0_tables.into_iter().collect();
                 // Retain only those ids which were not present in the initial snapshot of
                 // ids we took before compaction.
-                new_state.l0_sstables = new_state
-                    .l0_sstables
-                    .into_iter()
-                    .filter(|id| !id_set.remove(id))
-                    .collect();
+                new_state.l0_sstables.retain(|id| !id_set.remove(id));
                 // this id_set should be empty
                 debug_assert!(id_set.is_empty());
                 // Step 8: Take write lock and update the state
