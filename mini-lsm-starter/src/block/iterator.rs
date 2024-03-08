@@ -41,8 +41,11 @@ impl BlockIterator {
     }
     fn init(&mut self) {
         let key_len = (&self.block.data[2..4]).get_u16() as usize;
-        let key = &self.block.data[4..key_len + 4];
-        self.first_key = KeyVec::from_vec(key.to_vec());
+        let key = &self.block.data[4..4 + key_len];
+        // next 8 bytes are timestamp
+        let ts = (&self.block.data[key_len..key_len + 8]).get_u64();
+        // last
+        self.first_key = KeyVec::from_vec_with_ts(key.to_vec(), ts);
         self.seek_to_offset(0);
     }
 
@@ -76,8 +79,8 @@ impl BlockIterator {
 
         let key_length = (&self.block.data[this_kv_start_raw_idx + 2..this_kv_start_raw_idx + 4])
             .get_u16() as usize;
-        // start offset of value is length of the key + 2 (length of the key prefix) + 2(length of key suffix)
-        self.value_at_raw_offset(this_kv_start_raw_idx + key_length + 4)
+        // start offset of value is length of the key + 2 (length of the key prefix) + 2(length of key suffix) + 8 byte timestamp
+        self.value_at_raw_offset(this_kv_start_raw_idx + key_length + 12)
     }
 
     fn value_at_raw_offset(&self, raw_offset: usize) -> &[u8] {
@@ -104,10 +107,13 @@ impl BlockIterator {
             (&self.block.data[raw_offset + 2..raw_offset + 4]).get_u16() as usize;
         let key_start_idx = raw_offset + 4;
         let key_suffix = &self.block.data[key_start_idx..key_start_idx + remaining_key_length];
+        // read u64 after this suffix
+        let key_ts_index = raw_offset + 4 + remaining_key_length;
+        let ts = (&self.block.data[key_ts_index..key_ts_index + 8]).get_u64();
         let mut key_vec = Vec::with_capacity(key_prefix_len + key_suffix.len());
-        key_vec.extend(&self.first_key.raw_ref()[..key_prefix_len]);
+        key_vec.extend(&self.first_key.key_ref()[..key_prefix_len]);
         key_vec.extend(key_suffix);
-        Key::from_vec(key_vec)
+        Key::from_vec_with_ts(key_vec, ts)
     }
 
     /// Creates a block iterator and seek to the first entry.

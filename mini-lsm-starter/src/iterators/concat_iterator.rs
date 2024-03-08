@@ -75,10 +75,9 @@ impl SstConcatIterator {
     pub fn create_and_seek_to_key(sstables: Vec<Arc<SsTable>>, key: KeySlice) -> Result<Self> {
         SstConcatIterator::check_prerequisites(&sstables)?;
         // Step 1: Find the sstable which may have the key of our interest
-        let key_raw_bytes = key.raw_ref();
         let table_option = sstables
             .iter()
-            .position(|table| table.last_key().raw_ref() >= key_raw_bytes);
+            .position(|table| table.last_key().as_key_slice() >= key);
 
         // Step 2: If the idx is defined, we use that sstable to start our search
         if let Some(idx) = table_option {

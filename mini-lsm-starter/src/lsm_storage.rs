@@ -20,7 +20,7 @@ use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
-use crate::key::{KeyBytes, KeySlice};
+use crate::key::{KeyBytes, KeySlice, TS_RANGE_BEGIN};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::{map_bound, MemTable};
@@ -327,12 +327,15 @@ impl LsmStorageInner {
             .l0_sstables
             .iter()
             .map(|id| snapshot.sstables[id].clone())
-            .find(|table| key >= table.first_key().raw_ref() && key <= table.last_key().raw_ref());
+            .find(|table| key >= table.first_key().key_ref() && key <= table.last_key().key_ref());
 
         if let Some(table) = table_option {
             // This table can possibly have that key, lets try to seek it
-            let iter = SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(key))?;
-            if iter.is_valid() && iter.key().raw_ref() == key {
+            let iter = SsTableIterator::create_and_seek_to_key(
+                table,
+                KeySlice::from_slice(key, TS_RANGE_BEGIN),
+            )?;
+            if iter.is_valid() && iter.key().key_ref() == key {
                 let value = iter.value();
                 return if value.is_empty() {
                     // Value is deleted
@@ -350,9 +353,9 @@ impl LsmStorageInner {
                 .iter()
                 .map(|id| snapshot.sstables[id].clone())
                 .collect(),
-            KeySlice::from_slice(key),
+            KeySlice::from_slice(key, TS_RANGE_BEGIN),
         )?;
-        if sst_concat_iter.is_valid() && sst_concat_iter.key().raw_ref() == key {
+        if sst_concat_iter.is_valid() && sst_concat_iter.key().key_ref() == key {
             Ok(Some(Bytes::copy_from_slice(sst_concat_iter.value())))
         } else {
             Ok(None)
@@ -497,14 +500,14 @@ impl LsmStorageInner {
         table_end: KeyBytes,
     ) -> bool {
         let end_bound_matched = match end_bound {
-            Bound::Excluded(key) if key <= table_begin.raw_ref() => false,
-            Bound::Included(key) if key < table_begin.raw_ref() => false,
+            Bound::Excluded(key) if key <= table_begin.key_ref() => false,
+            Bound::Included(key) if key < table_begin.key_ref() => false,
             _ => true,
         };
         end_bound_matched
             && match start_bound {
-                Bound::Excluded(key) if key >= table_end.raw_ref() => false,
-                Bound::Included(key) if key > table_end.raw_ref() => false,
+                Bound::Excluded(key) if key >= table_end.key_ref() => false,
+                Bound::Included(key) if key > table_end.key_ref() => false,
                 _ => true,
             }
     }
@@ -533,15 +536,16 @@ impl LsmStorageInner {
             let (first_key, last_key) = (table.first_key(), table.last_key());
             if self.should_scan(lower, upper, first_key.clone(), last_key.clone()) {
                 let iter = match lower {
-                    Bound::Included(key) => {
-                        SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(key))?
-                    }
+                    Bound::Included(key) => SsTableIterator::create_and_seek_to_key(
+                        table,
+                        KeySlice::from_slice(key, TS_RANGE_BEGIN),
+                    )?,
                     Bound::Excluded(key) => {
                         let mut iter = SsTableIterator::create_and_seek_to_key(
                             table,
-                            KeySlice::from_slice(key),
+                            KeySlice::from_slice(key, TS_RANGE_BEGIN),
                         )?;
-                        if iter.is_valid() && iter.key().raw_ref() == key {
+                        if iter.is_valid() && iter.key().key_ref() == key {
                             iter.next()?;
                         }
                         iter
@@ -563,14 +567,14 @@ impl LsmStorageInner {
         let sst_concat_iter = match lower {
             Bound::Included(included) => SstConcatIterator::create_and_seek_to_key(
                 l1_sstables_to_scan,
-                KeySlice::from_slice(included),
+                KeySlice::from_slice(included, TS_RANGE_BEGIN),
             )?,
             Bound::Excluded(excluded) => {
                 let mut iter = SstConcatIterator::create_and_seek_to_key(
                     l1_sstables_to_scan,
-                    KeySlice::from_slice(excluded),
+                    KeySlice::from_slice(excluded, TS_RANGE_BEGIN),
                 )?;
-                if iter.is_valid() && iter.key().raw_ref() == excluded {
+                if iter.is_valid() && iter.key().key_ref() == excluded {
                     iter.next()?;
                 }
                 iter

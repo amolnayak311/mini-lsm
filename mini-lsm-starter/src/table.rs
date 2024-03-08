@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 pub use builder::SsTableBuilder;
-use bytes::{Buf, BufMut, Bytes};
+use bytes::{Buf, BufMut};
 pub use iterator::SsTableIterator;
 use nom::AsBytes;
 
@@ -45,11 +45,11 @@ impl BlockMeta {
             // size of the first_key
             std::mem::size_of::<u16>() +
             // actual num bytes of the first_key
-            meta.first_key.len() +
+            meta.first_key.key_len() +
             // size of the last_key
             std::mem::size_of::<u16>() +
             // actual num bytes of the last_key
-            meta.last_key.len()
+            meta.last_key.key_len()
             })
             .sum::<usize>()
             + std::mem::size_of::<u32>();
@@ -60,10 +60,12 @@ impl BlockMeta {
         buf.put_u32(block_meta.len() as u32);
         block_meta.iter().for_each(|block_meta| {
             buf.put_u32(block_meta.offset as u32);
-            buf.put_u16(block_meta.first_key.len() as u16);
-            buf.extend(block_meta.first_key.raw_ref());
-            buf.put_u16(block_meta.last_key.len() as u16);
-            buf.extend(block_meta.last_key.raw_ref());
+            buf.put_u16(block_meta.first_key.key_len() as u16);
+            buf.extend(block_meta.first_key.key_ref());
+            buf.put_u64(block_meta.first_key.ts());
+            buf.put_u16(block_meta.last_key.key_len() as u16);
+            buf.extend(block_meta.last_key.key_ref());
+            buf.put_u64(block_meta.last_key.ts());
         });
     }
 
@@ -75,9 +77,11 @@ impl BlockMeta {
             .map(|_| {
                 let offset = buf.get_u32() as usize;
                 let first_key_size = buf.get_u16() as usize;
-                let first_key = KeyBytes::from_bytes(buf.copy_to_bytes(first_key_size));
+                let first_key =
+                    KeyBytes::from_bytes_with_ts(buf.copy_to_bytes(first_key_size), buf.get_u64());
                 let last_key_size = buf.get_u16() as usize;
-                let last_key = KeyBytes::from_bytes(buf.copy_to_bytes(last_key_size));
+                let last_key =
+                    KeyBytes::from_bytes_with_ts(buf.copy_to_bytes(last_key_size), buf.get_u64());
                 BlockMeta {
                     offset,
                     first_key,
@@ -162,17 +166,8 @@ impl SsTable {
 
         let block_meta_bytes = file.read(block_meta_offset, end_offset - block_meta_offset - 4)?;
         let block_meta = BlockMeta::decode_block_meta(&block_meta_bytes[..]);
-        let first_key = if !block_meta.is_empty() {
-            block_meta.first().unwrap().first_key.clone()
-        } else {
-            KeyBytes::from_bytes(Bytes::new())
-        };
-
-        let last_key = if !block_meta.is_empty() {
-            block_meta.last().unwrap().last_key.clone()
-        } else {
-            KeyBytes::from_bytes(Bytes::new())
-        };
+        let first_key = block_meta.first().unwrap().first_key.clone();
+        let last_key = block_meta.last().unwrap().last_key.clone();
 
         Ok(SsTable {
             file,

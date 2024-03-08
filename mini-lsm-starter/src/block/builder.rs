@@ -43,7 +43,7 @@ impl BlockBuilder {
         // the number 6 is for 3 2 byte values needed for storing the key len, value len and
         // the offset
         assert!(!key.is_empty(), "Key must not be empty");
-        let bytes_needed_this_entry = key.len() + value.len() + 6;
+        let bytes_needed_this_entry = key.raw_len() + value.len() + 6;
 
         if self.expected_block_size() + bytes_needed_this_entry > self.block_size
             && !self.offsets.is_empty()
@@ -60,15 +60,18 @@ impl BlockBuilder {
             // find the common prefix length
             let overlap = self
                 .first_key
-                .raw_ref()
+                .key_ref()
                 .iter()
-                .zip(key.raw_ref())
+                .zip(key.key_ref())
                 .take_while(|(c1, c2)| c1 == c2)
                 .fold(0, |acc, _| acc + 1) as u16;
 
             self.data.put_u16(overlap);
-            self.data.put_u16(key.len() as u16 - overlap);
-            self.data.put(&key.raw_ref()[overlap as usize..]);
+            self.data.put_u16(key.key_len() as u16 - overlap);
+            self.data.put(&key.key_ref()[overlap as usize..]);
+            // Put the timestamp
+            self.data.put_u64(key.ts());
+
             // push the value length
             self.data.put_u16(value.len() as u16);
             self.data.put(value);

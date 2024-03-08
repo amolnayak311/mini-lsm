@@ -2,18 +2,18 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use bytes::{BufMut, Bytes};
+use bytes::BufMut;
 
 use super::{BlockMeta, FileObject, SsTable};
-use crate::key::KeyBytes;
+use crate::key::KeyVec;
 use crate::table::bloom::Bloom;
 use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
 
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
     builder: BlockBuilder,
-    first_key: Vec<u8>,
-    last_key: Vec<u8>,
+    first_key: KeyVec,
+    last_key: KeyVec,
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
@@ -25,8 +25,8 @@ impl SsTableBuilder {
     pub fn new(block_size: usize) -> Self {
         Self {
             builder: BlockBuilder::new(block_size),
-            first_key: vec![],
-            last_key: vec![],
+            first_key: KeyVec::new(),
+            last_key: KeyVec::new(),
             data: vec![],
             meta: vec![],
             block_size,
@@ -41,17 +41,17 @@ impl SsTableBuilder {
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
         debug_assert!(!key.is_empty(), "Key is empty");
         if self.first_key.is_empty() {
-            self.first_key = key.to_key_vec().into_inner();
+            self.first_key = key.to_key_vec();
         }
-        self.key_hashes.push(farmhash::fingerprint32(key.raw_ref()));
+        self.key_hashes.push(farmhash::fingerprint32(key.key_ref()));
         if self.builder.add(key, value) {
             // We were able to key value pair to existing memtable
-            self.last_key = key.to_key_vec().into_inner();
+            self.last_key = key.to_key_vec();
         } else {
             self.freeze_block();
             assert!(self.builder.add(key, value));
-            self.first_key = key.to_key_vec().into_inner();
-            self.last_key = key.to_key_vec().into_inner();
+            self.first_key = key.to_key_vec();
+            self.last_key = key.to_key_vec();
         }
     }
 
@@ -63,8 +63,8 @@ impl SsTableBuilder {
         let old_block = old_block_builder.build();
         self.meta.push(BlockMeta {
             offset: self.data.len(),
-            first_key: KeyBytes::from_bytes(Bytes::from(std::mem::take(&mut self.first_key))),
-            last_key: KeyBytes::from_bytes(Bytes::from(std::mem::take(&mut self.last_key))),
+            first_key: std::mem::take(&mut self.first_key).into_key_bytes(),
+            last_key: std::mem::take(&mut self.last_key).into_key_bytes(),
         });
         self.data.extend(old_block.encode());
     }
@@ -88,12 +88,12 @@ impl SsTableBuilder {
         let first_key = if !self.meta.is_empty() {
             self.meta.first().unwrap().first_key.clone()
         } else {
-            KeyBytes::from_bytes(Bytes::from(self.first_key))
+            self.first_key.into_key_bytes()
         };
         let last_key = if !self.meta.is_empty() {
             self.meta.last().unwrap().last_key.clone()
         } else {
-            KeyBytes::from_bytes(Bytes::from(self.last_key))
+            self.last_key.into_key_bytes()
         };
         let block_meta_offset = self.data.len();
         let mut buff = self.data;
